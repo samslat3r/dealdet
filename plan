@@ -1,0 +1,172 @@
+DealDet MVP - Build Order
+
+
+Prereqs
+-----------
+ Go 1.22 +, Postgres, uv, golang-migrate
+Ebay developer account for api
+Resend account (or twilio, but i prefer resend)
+
+----------
+Scaffolding
+
+go.mod
+.env.example
+.gitignore  (.env, sidecar/.env)
+Makefile    (build, migrate, sidecar-sync, sidecar-run-targets)
+
+
+-----
+
+Config
+
+internal/config/config.go (Load() reads env, PANICS on missing required env vars)
+
+------
+
+Domain Types (No imports required except stdlib and uuid)
+
+internal/domain/listing.go (RawListing, NormalizedListing, ConditionTier,  PriceSnapshot)
+internal/domain/deal.go     (DealCandidate, TierThresholds, DealTier, Score())
+internal/domain/product.go      (CanonicalProduct, MarketplaceSourceRow, WatchTargetRow, AlertRow)
+
+
+--------
+
+Adapter Interface
+
+internal/ingestion/source.go  ------- (MarketplaceSource interface, AdapterConfig, Registry map)
+---- define the interface PRIOR TO WRITING ANY EBAY CODE
+
+------------==--=---------------------------
+
+Ebay Adapters
+
+
+interal / ingestion/adapters/ebay/auth.go   (oauth token cache w/mutex)
+internal/ingestion/adapters/ebay/browse_client.go (Browse API, active listings)
+internal/ingestion/adapters/ebay/finding_client.go (Finding API, sold listings, XML)
+internal/ingestion/adapters/ebay/adapter.go (Wires both browse api client and finding api client) client. FindingService returns XML.
+    Authentication is just an appid in a query param --- rather than oauth.  hit svcs.ebay.com/services/search/FindingService with completedItems=true for completed listings
+        that is the data used to building the pricing baseline
+
+
+-----------------
+
+Database
+
+
+internal/store/migrations/001_initial_schema.up.sql (all tables + indexes + seed data)
+internal/store/migrations/001_initial_schema_down.sql (DROP TABLE statements)
+internal/store/postgres/db.go   (pgxpool, New(0, Close())
+internal/store/postgres/listing.go  (normalized, raw, product, watchlist queries)
+internal/store/postgres/deal.go (InsertDealCandidate, ListDealCandidate)
+internal/store/postgres/alert.go (InsertAlert with ON CONFLICT, MarkAlertSent, MarkAlertFailed)
+- run: make migrate-up -
+
+-------------
+
+Normalization
+
+internal/normalization/condition/mapper.go (eBay enum -> ConditionTier, keyword degredation)
+internal/normalization/resolver/rules.go (MatchRule, NormalizeTitle(), Match())
+internal/normalize/pipeline.go (Process(): conditionrules -> entity rules -> sidecar)
+        Condition resolution runs first.
+            step 1 - ebay enum map: hardcoded lookup table from condition/mapper.go
+                if: raw condition string = "Very Good", ConditionVeryGood returns back immediaately, fast. If "damage" keyword, tier is downgraded by one step before returning.
+
+                if: enum lookup fails, falls to sidecar's POST /classify  - receives title + raw condition string cat and returns 5 canonical labels
+                        - with a confidence score
+                        - if confidence score < 0.8 pipeline ignores ML result and falls to low conservative default rather than "low confidence guess"
+        Entity Resolution runs second.
+            step 1 is the rule matcher. canonical products have MatchRules with required keywords.
+            if rules don't match it falls through to sidecar's POST /embed
+                -sidecar embend normalize title with MiniLM-L6-v2 using cosin similiarity against embeddings for products in the catalog.
+                    returns closest match and a confidence score between 0 and 1
+
+
+        Pipeline bins score into three outcomes 0.85 resolves as ml confidence match
+        0.75 >= 0.85 ml_low_confidence : coninical product ID is set but flagged for monitoring
+        <0.75 : unresolved: listing is written to db but canonical_product_id is null - never scored or alerted on
+
+        Condition is resolved first bc it affects pricing baseline will be compared against - condition wrong is worse than getting entity wrong.
+        Misclassified condition dontition sends scoring stage to compare listing against WRONG population ofsold prices - GARBAGE deal if identity is correct
+
+        Entity resolution is second bc - until you know what the product is, you can't look up pricing history....
+
+        Rules run before sidecar in both cases because network cal to a local process costs time per listing. Sidecar only sees the shit rules can't handle.
+
+
+-----------------------------------
+
+
+Python Sidecar
+
+sidecar/pyproject.tomp (fastapi, uvicorn, sentence,transformers, torch CPU index)
+sidecar/.python-version (3.11)
+sidecar/main.py - (POST /embed POST /classify POST /reload GET /health)
+-run make sidecar-sync && make sidecar-run
+
+---------------------
+
+
+Pricing Engine
+
+
+internal/pricing/baseline.go (ComputeBaselinePrice(): trim mean, 8 sample mean, condition fallback)
+internal/pricing/scorer.go (ScoreCandidate(): calls baseline and returns DealCandidate)
+
+----------
+
+Alerting
+
+internal/alerting/engine.go (Evaluate(), idempotency key, channelsForTier())
+internal/alerting/dispatch/email.go (Resend REST)
+internal/alerting/dispatch/discord.go (webhook POST, rich embed)
+internal/alerting/dispatch/sms.go (Twilio)
+
+
+----
+
+API
+
+internal/api/handler/deals.go (ListDeals handler, DealStore interface)
+cmd/api/main.go (mux, GET /deals /GET health and shutdown)
+
+------
+
+Entry Point
+
+cmd/worker/main.go  (load cfg -> DB -> rules -> pipeline -> pricing -> alerting -> build adapters from registry, ticker 2min and sold ticker 6h)
+
+-----
+
+Tooling
+
+docker-compose.yml (postgres service for local-dev)
+Dockerfile.md (multi-stage go build)
+Dockerfile.worker (multi-stage go build for worker)
+Dockerfile.sidecar (python 3.11 slim & uv  sync)
+
+-----
+
+First Run
+
+
+```bash
+go mod tidy
+make migrate-up
+make sidecar-run (tmux session 1)
+make run-worker (tmux session 2)
+make run-api (tmux session 3)
+curl localhost:8090/deals | jq .
+```
+
+
+DO NOT BREAK THESE
+
+/internal/domain IMPORTS NOTHING BUT STDLIB AND uuid
+/internal/store/postgres ONLY PLACE THAT WRITES TO DB
+schedudler calls MarketplaceSource.Fetch() ONLY - do not want ebay to leak
+alert rows use "ON CONFLICT" (idempotency key DP DO NOTHING
+scceuejy od 2
