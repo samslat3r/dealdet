@@ -36,7 +36,7 @@ type DealCandidate struct {
 	BaselinePrice       float64
 	Status              DealStatus
 	DetectedAt          time.Time
-	ExpiresAt           *time.Time // value is optional / present but zero potentially
+	ExpiresAt           *time.Time 
 }
 
 type TierThresholds struct {
