@@ -1,0 +1,10 @@
+DROP TABLE IF EXISTS alert;
+DROP TABLE IF EXISTS deal_candidate;
+DROP TABLE IF EXISTS price_snapshot;
+DROP TABLE IF EXISTS normalized_listing;
+DROP TABLE IF EXISTS raw_listing;
+DROP TABLE IF EXISTS watch_target;
+DROP TABLE IF EXISTS watchlist;
+DROP TABLE IF EXISTS match_rule;
+DROP TABLE IF EXISTS canonical_product;
+DROP TABLE IF EXISTS marketplace_source;
