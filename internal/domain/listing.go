@@ -1,6 +1,5 @@
 package domain
 
-// STUB
 import (
 	"time"
 
@@ -45,11 +44,13 @@ func (c ConditionTier) Downgrade() ConditionTier {
 	case ConditionLikeNew:
 		return ConditionVeryGood
 	case ConditionVeryGood:
+		return ConditionGood
+	case ConditionGood:
 		return ConditionAcceptable
 	case ConditionAcceptable:
 		return ConditionAcceptable
 	default:
-		return ConditionAcceptable
+		return ConditionUnknown
 	}
 }
 
