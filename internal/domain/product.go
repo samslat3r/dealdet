@@ -32,7 +32,7 @@ type WatchTargetRow struct {
 	ID                 uuid.UUID
 	WatchlistID        uuid.UUID
 	CanonicalProductID uuid.UUID
-	GoodPCT            float64
+	GoodPct            float64
 	GoodAbsUSD         float64
 	GreatPct           float64
 	GreatAbsUSD        float64
