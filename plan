@@ -170,3 +170,117 @@ DO NOT BREAK THESE
 schedudler calls MarketplaceSource.Fetch() ONLY - do not want ebay to leak
 alert rows use "ON CONFLICT" (idempotency key DP DO NOTHING
 scceuejy od 2
+
+
+
+---------
+
+Pipeline starts with domain types: listing.go, deal.go, product.go 
+
+1. DOMAIN TYPES 
+listing.go: 
+    raw data from marketplace adapters
+    output of normalization
+    condition scale
+    computed baseline sold price for a "product:condition_tier"
+
+
+*contracts established by listing.go * 
+adapters produce RawListing
+normalization produces NormalizedListing
+pricing produces PriceSnapshot
+
+deal.go:
+    defines pricing and alerting models
+    DealCandidate - scored version of an active listing
+    TierThresholds - good/great/excellent
+
+    *contracts established by deal.go *
+    Score(priceUSD, baselineUSD) - the.... scoring contract 
+
+product.go 
+    catalog and watchlist side 
+    later stages will rely on these for identity, rules, MarkAlertSent
+
+2. INGEST BOUNDARY
+
+source.go - generic marketplace interface - not just ebay-specific
+
+Implemented adapter boundary is: adapter.go . Entry point for market fetches. Routing:
+active listings -> browse client
+sold listings -> finding client 
+
+therefore
+
+active listings feed deal discovery and sold listings feed pricing history 
+
+
+3. Normalization pipeline
+
+Three layers.
+mapper.go 
+    Resolve()
+        Hardcoded mappings for ebay condition strings
+        Keywords overrides for ignoring items (broken/not working/for parts)
+        Downgrade keywords (scratches, wear)
+    
+rules.go : entity resolution from the title. Normalizes titles, sorts rule
+
+
+example
+
+rules := []MatchRule{
+    {
+        Name:               "sony-generic",
+        CanonicalProductID: idA,
+        RequiredKeywords:   []string{"sony", "85mm"},
+        MatchMode:          MatchModeAll,
+        Priority:           5,
+    },
+    {
+        Name:               "sony-fe-85",
+        CanonicalProductID: idB,
+        RequiredKeywords:   []string{"sony", "fe", "85mm"},
+        MatchMode:          MatchModeAll,
+        Priority:           5,
+    },
+    {
+        Name:               "sony-any-portrait",
+        CanonicalProductID: idC,
+        RequiredKeywords:   []string{"sony", "85mm", "portrait"},
+        MatchMode:          MatchModeAny,
+        Priority:           20,
+    },
+}
+            Step 1: Sort by priority
+
+                sony-any-portrait has priority 20
+                the other two have priority 5
+            Step 2. If two are equal priority, sort by the number of matching RequiredKeywords. sony-fe-85 and sony-generic:
+                -both have priority 5
+                -sony-fe-85 has 3 required keywords, the other has 2. sony-fe-85 comes before sony-generic
+
+            
+ANOTHER EXAMPLE WITH EXCLUDED Keywords
+
+{
+    Name:               "canon-rf-50",
+    CanonicalProductID: idX,
+    RequiredKeywords:   []string{"canon", "50mm"},
+    ExcludedKeywords:   []string{"fd"},
+    MatchMode:          MatchModeAll,
+    Priority:           10,
+}
+
+rulematches checks ExcludedKeywords first... fails immediately. Returns no match. 
+
+Tie breaker: which has less text... and which title is smaller 
+
+in short: 
+Normalize the title
+Copy and sort the rules
+For each rule in sorted order:
+reject if an excluded phrase matches
+check required keywords using "all" or "any"
+if it matches, return that product ID and confidence immediately
+If none match, return nil, 0
