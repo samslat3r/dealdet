@@ -18,15 +18,16 @@ type FetchParams struct {
 
 // MarketplaceSource is the contract each marketplace adapter needs to satisfy
 // Scheduler only ever calls THIS interface - it never knows what marketplace directly
+// They all need these methods anyway, so this is a good abstraction boundary
 type MarketplaceSource interface {
 	Name() string
 	Fetch(ctx context.Context, params FetchParams) ([]domain.RawListing, error)
 	RateLimit(ctx context.Context) (remaining int, resetAt time.Time, err error)
 }
 
-// AdapterConfig passed to adapter constructors
-//
-//	DB - > SourceID is UUID from marketplace_source row set by scheduler
+// AdapterConfig passed to adapter constructors`
+// AdapterConfig holds the necessary configuration for an adapter
+// SourceID is the UUID from the marketplace_source row set by the scheduler
 type AdapterConfig struct {
 	AppID    string
 	CertID   string
