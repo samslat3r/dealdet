@@ -253,6 +253,47 @@ func (s *Store) ListWatchTargetsByProduct(ctx context.Context, canonicalProductI
 	return targets, nil
 }
 
+
+// ListSoldPrices satisfies pricing.SoldPriceLister and is necessary
+// Chain: worker calls ScoreCandidate → calls ComputeBaseline(ctx, store, ...) → calls store.ListSoldPrices(...)
+// Pass condition="" to query across all conditions (fallback from baseline)
+func (s *Store) ListSoldPrices(ctx context.Context, productID uuid.UUID, condition domain.ConditionTier, windowDays int) ([]float64, error) {
+    pool, err := s.poolOrError()
+    if err != nil {
+        return nil, err
+    }
+
+    rows, err := pool.Query(ctx,`
+        SELECT nl.price_usd
+        FROM normalized_listing nl
+        JOIN raw_listing rl ON rl.id = nl.raw_listing_id
+        WHERE nl.canonical_product_id = $1
+            AND ($2 = '' OR nl.condition_canonical = $2)
+            AND rl.listing_type = 'sold'
+            AND rl.fetched_at > NOW() - make_interval(days => $3)
+    `, productID, string(condition), windowDays)
+    if err != nil {
+        return nil, fmt.Errorf("list sold prices for product %s: %w", productID, err)
+    }
+    refer rows.Close()
+
+    prices := make([]float64, 0)
+    for rows.Next() {
+        var p float64
+        if err := rows.Scan(&p); err != nil {
+            return nil, fmt.Errorf("scan sold price: %w", err)
+        }
+        prices = append(prices, p)
+    }
+    if err := rows.Err(); err != nil {
+        return nil, fmt.Errorf("iterate sold prices: %w", err)
+    }
+    
+    return prices, nil
+}
+
+
+
 func (s *Store) InsertPriceSnapshot(ctx context.Context, snapshot domain.PriceSnapshot) error {
 	pool, err := s.poolOrError()
 	if err != nil {
